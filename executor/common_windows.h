@@ -5,7 +5,6 @@
 
 #include <windows.h>
 
-#include "common.h"
 
 #if SYZ_EXECUTOR || SYZ_HANDLE_SEGV
 static void install_segv_handler()
@@ -20,14 +19,14 @@ static void install_segv_handler()
 #endif
 
 #if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
-static uint64 current_time_ms()
+static uint64_t current_time_ms()
 {
 	return GetTickCount64();
 }
 #endif
 
 #if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
-static void sleep_ms(uint64 ms)
+static void sleep_ms(uint64_t ms)
 {
 	Sleep(ms);
 }
@@ -85,14 +84,14 @@ static int event_isset(event_t* ev)
 	return res;
 }
 
-static int event_timedwait(event_t* ev, uint64 timeout_ms)
+static int event_timedwait(event_t* ev, uint64_t timeout_ms)
 {
 	EnterCriticalSection(&ev->cs);
-	uint64 start = current_time_ms();
+	uint64_t start = current_time_ms();
 	for (;;) {
 		if (ev->state)
 			break;
-		uint64 now = current_time_ms();
+		uint64_t now = current_time_ms();
 		if (now - start > timeout_ms)
 			break;
 		SleepConditionVariableCS(&ev->cv, &ev->cs, timeout_ms - (now - start));

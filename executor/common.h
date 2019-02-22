@@ -15,111 +15,24 @@
 #define _GNU_SOURCE
 #endif
 
-#if GOOS_freebsd
-#include <sys/endian.h> // for htobe*.
-#else
-#include <endian.h> // for htobe*.
-#endif
 #include <stdint.h>
 #include <stdio.h> // for fmt arguments
 #include <stdlib.h>
 #include <string.h>
 
+#include "common_windows.h"
 #if SYZ_TRACE
 #include <errno.h>
 #endif
 
-#if SYZ_EXECUTOR && !GOOS_linux
-#include <unistd.h>
 NORETURN void doexit(int status)
 {
 	_exit(status);
 	for (;;) {
 	}
 }
-#endif
 
-#if SYZ_EXECUTOR || SYZ_PROCS || SYZ_REPEAT && SYZ_ENABLE_CGROUPS ||         \
-    SYZ_ENABLE_NETDEV || __NR_syz_mount_image || __NR_syz_read_part_table || \
-    (GOOS_openbsd || GOOS_freebsd) && SYZ_TUN_ENABLE
 unsigned long long procid;
-#endif
-
-#if !GOOS_fuchsia && !GOOS_windows
-#if SYZ_EXECUTOR || SYZ_HANDLE_SEGV
-#include <setjmp.h>
-#include <signal.h>
-#include <string.h>
-
-#if GOOS_linux
-#include <sys/syscall.h>
-#endif
-
-static __thread int skip_segv;
-static __thread jmp_buf segv_env;
-
-#if GOOS_akaros
-#include <parlib/parlib.h>
-static void recover(void)
-{
-	_longjmp(segv_env, 1);
-}
-#endif
-
-static void segv_handler(int sig, siginfo_t* info, void* ctx)
-{
-	// Generated programs can contain bad (unmapped/protected) addresses,
-	// which cause SIGSEGVs during copyin/copyout.
-	// This handler ignores such crashes to allow the program to proceed.
-	// We additionally opportunistically check that the faulty address
-	// is not within executable data region, because such accesses can corrupt
-	// output region and then fuzzer will fail on corrupted data.
-	uintptr_t addr = (uintptr_t)info->si_addr;
-	const uintptr_t prog_start = 1 << 20;
-	const uintptr_t prog_end = 100 << 20;
-	if (__atomic_load_n(&skip_segv, __ATOMIC_RELAXED) && (addr < prog_start || addr > prog_end)) {
-		debug("SIGSEGV on %p, skipping\n", (void*)addr);
-#if GOOS_akaros
-		struct user_context* uctx = (struct user_context*)ctx;
-		uctx->tf.hw_tf.tf_rip = (long)(void*)recover;
-		return;
-#else
-		_longjmp(segv_env, 1);
-#endif
-	}
-	debug("SIGSEGV on %p, exiting\n", (void*)addr);
-	doexit(sig);
-}
-
-static void install_segv_handler(void)
-{
-	struct sigaction sa;
-#if GOOS_linux
-	// Don't need that SIGCANCEL/SIGSETXID glibc stuff.
-	// SIGCANCEL sent to main thread causes it to exit
-	// without bringing down the whole group.
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_handler = SIG_IGN;
-	syscall(SYS_rt_sigaction, 0x20, &sa, NULL, 8);
-	syscall(SYS_rt_sigaction, 0x21, &sa, NULL, 8);
-#endif
-	memset(&sa, 0, sizeof(sa));
-	sa.sa_sigaction = segv_handler;
-	sa.sa_flags = SA_NODEFER | SA_SIGINFO;
-	sigaction(SIGSEGV, &sa, NULL);
-	sigaction(SIGBUS, &sa, NULL);
-}
-
-#define NONFAILING(...)                                              \
-	{                                                            \
-		__atomic_fetch_add(&skip_segv, 1, __ATOMIC_SEQ_CST); \
-		if (_setjmp(segv_env) == 0) {                        \
-			__VA_ARGS__;                                 \
-		}                                                    \
-		__atomic_fetch_sub(&skip_segv, 1, __ATOMIC_SEQ_CST); \
-	}
-#endif
-#endif
 
 #if !GOOS_linux
 #if (SYZ_EXECUTOR || SYZ_REPEAT) && SYZ_EXECUTOR_USES_FORK_SERVER
@@ -132,86 +45,6 @@ static void kill_and_wait(int pid, int* status)
 	kill(pid, SIGKILL);
 	while (waitpid(-1, status, 0) != pid) {
 	}
-}
-#endif
-#endif
-
-#if !GOOS_windows
-#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
-static void sleep_ms(uint64 ms)
-{
-	usleep(ms * 1000);
-}
-#endif
-
-#if SYZ_EXECUTOR || SYZ_THREADED || SYZ_REPEAT && SYZ_EXECUTOR_USES_FORK_SERVER
-#include <time.h>
-
-static uint64 current_time_ms(void)
-{
-	struct timespec ts;
-	if (clock_gettime(CLOCK_MONOTONIC, &ts))
-		fail("clock_gettime failed");
-	return (uint64)ts.tv_sec * 1000 + (uint64)ts.tv_nsec / 1000000;
-}
-#endif
-
-#if SYZ_EXECUTOR || SYZ_SANDBOX_ANDROID_UNTRUSTED_APP || SYZ_USE_TMP_DIR
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <unistd.h>
-
-static void use_temporary_dir(void)
-{
-#if SYZ_SANDBOX_ANDROID_UNTRUSTED_APP
-	char tmpdir_template[] = "/data/data/syzkaller/syzkaller.XXXXXX";
-#else
-	char tmpdir_template[] = "./syzkaller.XXXXXX";
-#endif
-	char* tmpdir = mkdtemp(tmpdir_template);
-	if (!tmpdir)
-		fail("failed to mkdtemp");
-	if (chmod(tmpdir, 0777))
-		fail("failed to chmod");
-	if (chdir(tmpdir))
-		fail("failed to chdir");
-}
-#endif
-#endif
-
-#if GOOS_akaros || GOOS_netbsd || GOOS_freebsd || GOOS_openbsd || GOOS_test
-#if SYZ_EXECUTOR || SYZ_EXECUTOR_USES_FORK_SERVER && SYZ_REPEAT && SYZ_USE_TMP_DIR
-#include <dirent.h>
-#include <stdio.h>
-#include <string.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
-static void remove_dir(const char* dir)
-{
-	DIR* dp;
-	struct dirent* ep;
-	dp = opendir(dir);
-	if (dp == NULL)
-		exitf("opendir(%s) failed", dir);
-	while ((ep = readdir(dp))) {
-		if (strcmp(ep->d_name, ".") == 0 || strcmp(ep->d_name, "..") == 0)
-			continue;
-		char filename[FILENAME_MAX];
-		snprintf(filename, sizeof(filename), "%s/%s", dir, ep->d_name);
-		struct stat st;
-		if (lstat(filename, &st))
-			exitf("lstat(%s) failed", filename);
-		if (S_ISDIR(st.st_mode)) {
-			remove_dir(filename);
-			continue;
-		}
-		if (unlink(filename))
-			exitf("unlink(%s) failed", filename);
-	}
-	closedir(dp);
-	if (rmdir(dir))
-		exitf("rmdir(%s) failed", dir);
 }
 #endif
 #endif
@@ -231,100 +64,6 @@ static int fault_injected(int fail_fd)
 #endif
 #endif
 
-#if !GOOS_windows
-#if SYZ_EXECUTOR || SYZ_THREADED
-#include <pthread.h>
-
-static void thread_start(void* (*fn)(void*), void* arg)
-{
-	pthread_t th;
-	pthread_attr_t attr;
-	pthread_attr_init(&attr);
-	pthread_attr_setstacksize(&attr, 128 << 10);
-	if (pthread_create(&th, &attr, fn, arg))
-		exitf("pthread_create failed");
-	pthread_attr_destroy(&attr);
-}
-
-#endif
-#endif
-
-#if GOOS_freebsd || GOOS_netbsd || GOOS_openbsd || GOOS_akaros || GOOS_test
-#if SYZ_EXECUTOR || SYZ_THREADED
-
-#include <pthread.h>
-#include <time.h>
-
-typedef struct {
-	pthread_mutex_t mu;
-	pthread_cond_t cv;
-	int state;
-} event_t;
-
-static void event_init(event_t* ev)
-{
-	if (pthread_mutex_init(&ev->mu, 0))
-		fail("pthread_mutex_init failed");
-	if (pthread_cond_init(&ev->cv, 0))
-		fail("pthread_cond_init failed");
-	ev->state = 0;
-}
-
-static void event_reset(event_t* ev)
-{
-	ev->state = 0;
-}
-
-static void event_set(event_t* ev)
-{
-	pthread_mutex_lock(&ev->mu);
-	if (ev->state)
-		fail("event already set");
-	ev->state = 1;
-	pthread_mutex_unlock(&ev->mu);
-	pthread_cond_broadcast(&ev->cv);
-}
-
-static void event_wait(event_t* ev)
-{
-	pthread_mutex_lock(&ev->mu);
-	while (!ev->state)
-		pthread_cond_wait(&ev->cv, &ev->mu);
-	pthread_mutex_unlock(&ev->mu);
-}
-
-static int event_isset(event_t* ev)
-{
-	pthread_mutex_lock(&ev->mu);
-	int res = ev->state;
-	pthread_mutex_unlock(&ev->mu);
-	return res;
-}
-
-static int event_timedwait(event_t* ev, uint64 timeout)
-{
-	uint64 start = current_time_ms();
-	uint64 now = start;
-	pthread_mutex_lock(&ev->mu);
-	for (;;) {
-		if (ev->state)
-			break;
-		uint64 remain = timeout - (now - start);
-		struct timespec ts;
-		ts.tv_sec = remain / 1000;
-		ts.tv_nsec = (remain % 1000) * 1000 * 1000;
-		pthread_cond_timedwait(&ev->cv, &ev->mu, &ts);
-		now = current_time_ms();
-		if (now - start > timeout)
-			break;
-	}
-	int res = ev->state;
-	pthread_mutex_unlock(&ev->mu);
-	return res;
-}
-#endif
-#endif
-
 #if SYZ_EXECUTOR || SYZ_USE_BITMASKS
 #define BITMASK(bf_off, bf_len) (((1ull << (bf_len)) - 1) << (bf_off))
 #define STORE_BY_BITMASK(type, htobe, addr, val, bf_off, bf_len)                        \
@@ -332,37 +71,36 @@ static int event_timedwait(event_t* ev, uint64 timeout)
 			       (((type)(val) << (bf_off)) & BITMASK((bf_off), (bf_len))))
 #endif
 
-#if SYZ_EXECUTOR || SYZ_USE_CHECKSUMS
 struct csum_inet {
-	uint32 acc;
+	uint32_t acc;
 };
 
-static void csum_inet_init(struct csum_inet* csum)
+void csum_inet_init(struct csum_inet* csum)
 {
 	csum->acc = 0;
 }
 
-static void csum_inet_update(struct csum_inet* csum, const uint8* data, size_t length)
+static void csum_inet_update(struct csum_inet* csum, const uint8_t* data, size_t length)
 {
 	if (length == 0)
 		return;
 
 	size_t i;
 	for (i = 0; i < length - 1; i += 2)
-		csum->acc += *(uint16*)&data[i];
+		csum->acc += *(uint16_t*)&data[i];
 
 	if (length & 1)
-		csum->acc += (uint16)data[length - 1];
+		csum->acc += (uint16_t)data[length - 1];
 
 	while (csum->acc > 0xffff)
 		csum->acc = (csum->acc & 0xffff) + (csum->acc >> 16);
 }
 
-static uint16 csum_inet_digest(struct csum_inet* csum)
+static uint16_t csum_inet_digest(struct csum_inet* csum)
 {
 	return ~csum->acc;
 }
-#endif
+
 
 #if SYZ_EXECUTOR || __NR_syz_execute_func
 // syz_execute_func(text ptr[in, text[taget]])
@@ -373,23 +111,7 @@ static long syz_execute_func(long text)
 }
 #endif
 
-#if GOOS_akaros
-#include "common_akaros.h"
-#elif GOOS_freebsd || GOOS_netbsd || GOOS_openbsd
-#include "common_bsd.h"
-#elif GOOS_fuchsia
-#include "common_fuchsia.h"
-#elif GOOS_linux
-#include "common_linux.h"
-#elif GOOS_test
-#include "common_test.h"
-#elif GOOS_windows
-#include "common_windows.h"
-#elif GOOS_test
-#include "common_test.h"
-#else
-#error "unknown OS"
-#endif
+
 
 #if SYZ_THREADED
 struct thread_t {
@@ -398,7 +120,7 @@ struct thread_t {
 };
 
 static struct thread_t threads[16];
-static void execute_call(int call);
+static void execute_call(thread_t* th);
 static int running;
 
 static void* thr(void* arg)
@@ -474,11 +196,7 @@ static void execute_one(void);
 #include <sys/types.h>
 #include <sys/wait.h>
 
-#if GOOS_linux
-#define WAIT_FLAGS __WALL
-#else
 #define WAIT_FLAGS 0
-#endif
 
 #if SYZ_EXECUTOR
 static void reply_handshake();
@@ -563,10 +281,10 @@ static void loop(void)
 		// SIGCHLD should also unblock the usleep below, so the spin loop
 		// should be as efficient as sigtimedwait.
 		int status = 0;
-		uint64 start = current_time_ms();
+		uint64_t start = current_time_ms();
 #if SYZ_EXECUTOR && SYZ_EXECUTOR_USES_SHMEM
-		uint64 last_executed = start;
-		uint32 executed_calls = __atomic_load_n(output_data, __ATOMIC_RELAXED);
+		uint64_t last_executed = start;
+		uint32_t executed_calls = __atomic_load_n(output_data, __ATOMIC_RELAXED);
 #endif
 		for (;;) {
 			if (waitpid(-1, &status, WNOHANG | WAIT_FLAGS) == pid)
@@ -583,8 +301,8 @@ static void loop(void)
 			// then the main thread hangs when it wants to page in a page.
 			// Below we check if the test process still executes syscalls
 			// and kill it after 1s of inactivity.
-			uint64 now = current_time_ms();
-			uint32 now_executed = __atomic_load_n(output_data, __ATOMIC_RELAXED);
+			uint64_t now = current_time_ms();
+			uint32_t now_executed = __atomic_load_n(output_data, __ATOMIC_RELAXED);
 			if (executed_calls != now_executed) {
 				executed_calls = now_executed;
 				last_executed = now;
