@@ -332,7 +332,7 @@ var oses = map[string]osCommon{
 	},
 	"windows": {
 		SyscallNumbers:         false,
-		ExecutorUsesShmem:      false,
+		ExecutorUsesShmem:      true,
 		ExecutorUsesForkServer: false,
 		ExeExtension:           ".exe",
 		KernelObject:           "vmlinux",

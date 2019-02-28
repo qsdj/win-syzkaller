@@ -93,6 +93,15 @@ static uint32_t* write_output(uint32_t v);
 static void write_completed(uint32_t completed);
 static uint32_t hash(uint32_t a);
 static bool dedup(uint32_t sig);
+static void alloc_shm();
+#if GOOS_windows
+const int MaxNameLength = 255;
+static char inShmName[MaxNameLength+1];
+static char outShmName[MaxNameLength+1];
+HANDLE inShm;
+HANDLE outShm;
+static void receive_shm_name();
+#endif
 #endif
 
 enum sandbox_type {
@@ -154,7 +163,11 @@ uint32_t completed;
 bool is_kernel_64_bit = true;
 
 //__declspec(align(2<<12-1)) // MAX align val : 8192
+#if GOOS_windows
+static char *input_data;
+#else
 static char input_data[kMaxInput];
+#endif
 
 // Checksum kinds.
 static const uint64_t arg_csum_inet = 0;
@@ -237,6 +250,12 @@ struct execute_reply {
 	uint32_t done;
 	uint32_t status;
 };
+
+struct shm_req {
+	uint64_t magic;
+	uint64_t in_shm_length;
+	uint64_t out_shm_length;
+}
 
 // call_reply.flags
 const uint32_t call_flag_executed = 1 << 0;
@@ -321,25 +340,13 @@ int main(int argc, char** argv)
 	os_init(argc, argv, (void*)SYZ_DATA_OFFSET, SYZ_NUM_PAGES * SYZ_PAGE_SIZE);
 
 #if SYZ_EXECUTOR_USES_SHMEM
-	if (mmap(&input_data[0], kMaxInput, PROT_READ, MAP_PRIVATE | MAP_FIXED, kInFd, 0) != &input_data[0])
-		fail("mmap of input file failed");
-	// The output region is the only thing in executor process for which consistency matters.
-	// If it is corrupted ipc package will fail to parse its contents and panic.
-	// But fuzzer constantly invents new ways of how to currupt the region,
-	// so we map the region at a (hopefully) hard to guess address with random offset,
-	// surrounded by unmapped pages.
-	// The address chosen must also work on 32-bit kernels with 1GB user address space.
-	void* preferred = (void*)(0x1b2bc20000ull + (1 << 20) * (getpid() % 128));
-	output_data = (uint32_t*)mmap(preferred, kMaxOutput,
-				    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, kOutFd, 0);
-	if (output_data != preferred)
-		fail("mmap of output file failed");
-
-	// Prevent test programs to mess with these fds.
-	// Due to races in collider mode, a program can e.g. ftruncate one of these fds,
-	// which will cause fuzzer to crash.
-	close(kInFd);
-	close(kOutFd);
+        alloc_shm();
+#else
+#if GOOS_windows
+	VirtualAlloc(input_data, kMaxInput, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (!input_data)
+		fail("VirtualAlloc failed with input_data");
+#endif
 #endif
 
 	use_temporary_dir();
@@ -411,6 +418,65 @@ int main(int argc, char** argv)
 	return status;
 #endif
 }
+
+#if SYZ_EXECUTOR_USES_SHMEM
+#if GOOS_windows
+void receive_shm_name()
+{
+	shm_req req;
+	if (read(kInPipeFd, &req, sizeof(req)) != (signed int)sizeof(req))
+		fail("control pipe read failed");
+	if (req.magic != kInMagic)
+		fail("bad execute request magic 0x%llx", req.magic);
+	if (req.in_shm_length > MaxNameLength)
+		fail("bad in_shm_name size 0x%llx", req.in_shm_length);
+	if (req.out_shm_length > MaxNameLength)
+		fail("bad out_shm_name size 0x%llx", req.out_shm_length);
+
+	if (read(kInPipeFd, inShmName, req.in_shm_length) != (signed int)(req.in_shm_length))
+		fail("control pipe read failed");
+	if (read(kInPipeFd, outShmName, req.out_shm_length) != (signed int)(req.out_shm_length))
+		fail("control pipe read failed");
+}
+#endif
+
+void alloc_shm()
+{
+#if GOOS_windows
+	receive_shm_name();
+	inShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxInput, inShmName);
+	input_data = MapViewOfFile(inShm, FILE_MAP_WRITE, 0, 0, 0);
+	if (!input_data)
+		fail("VirtualAlloc of input file failed");
+
+	outShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxOutput, outShmName);
+	output_data = MapViewOfFile(outShm, FILE_MAP_WRITE, 0, 0, 0);
+	if (!output_data)
+		fail("VirtualAlloc of output file failed");
+
+#else
+	if (mmap(&input_data[0], kMaxInput, PROT_READ, MAP_PRIVATE | MAP_FIXED, kInFd, 0) != &input_data[0])
+		fail("mmap of input file failed");
+	// The output region is the only thing in executor process for which consistency matters.
+	// If it is corrupted ipc package will fail to parse its contents and panic.
+	// But fuzzer constantly invents new ways of how to currupt the region,
+	// so we map the region at a (hopefully) hard to guess address with random offset,
+	// surrounded by unmapped pages.
+	// The address chosen must also work on 32-bit kernels with 1GB user address space.
+	void* preferred = (void*)(0x1b2bc20000ull + (1 << 20) * (getpid() % 128));
+	output_data = (uint32_t*)mmap(preferred, kMaxOutput,
+				    PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, kOutFd, 0);
+	if (output_data != preferred)
+		fail("mmap of output file failed");
+
+	// Prevent test programs to mess with these fds.
+	// Due to races in collider mode, a program can e.g. ftruncate one of these fds,
+	// which will cause fuzzer to crash.
+	close(kInFd);
+	close(kOutFd);
+#endif
+}
+#endif
 
 void setup_control_pipes()
 {

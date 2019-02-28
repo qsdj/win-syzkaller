@@ -15,8 +15,8 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/cover"
+	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
@@ -271,7 +271,7 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 	}
 
 	atomic.AddUint64(&env.StatExecs, 1)
-	log.Logf(0,"")
+	log.Logf(0, "")
 	if env.cmd == nil {
 		if p.Target.OS == "akaros" {
 			// On akaros executor is actually ssh,
@@ -524,10 +524,10 @@ type executeReply struct {
 }
 
 type callReply struct {
-	index      uint32 // call index in the program
-//	buf		   uint32
-//	numH	   uint32
-//	numL	   uint32
+	index uint32 // call index in the program
+	//	buf		   uint32
+	//	numH	   uint32
+	//	numL	   uint32
 	num        uint32 // syscall number (for cross-checking)
 	errno      uint32
 	flags      uint32 // see CallFlags
@@ -535,6 +535,17 @@ type callReply struct {
 	coverSize  uint32
 	compsSize  uint32
 	// signal/cover/comps follow
+}
+
+const (
+	inShmName  string = ""
+	outShmName string = ""
+)
+
+type shmReq struct {
+	magic        uint64
+	inShmLength  uint64
+	outShmLength uint64
 }
 
 func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte) (
@@ -730,6 +741,34 @@ func (c *command) wait() error {
 
 func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, hanged,
 	restart bool, err0 error) {
+	if c.config.Flags&FlagUseShmem != 0 {
+		if p.Target.OS == "windows" {
+			shmReq := &shmReq{
+				magic:        inMagic,
+				inShmLength:  uint64(len(inShmName)),
+				outShmLength: uint64(len(outShmName)),
+			}
+			shmReqData := (*[unsafe.Sizeof(*shmReq)]byte)(unsafe.Pointer(shmReq))[:]
+			if _, err := c.outwp.Write(shmReqData); err != nil {
+				output = <-c.readDone
+				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+				return
+			}
+			inShmNameData := (*[unsafe.Sizeof(*inShmName)]byte)(unsafe.Pointer(inShmName))[:]
+			if _, err := c.outwp.Write(inShmNameData); err != nil {
+				output = <-c.readDone
+				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+				return
+			}
+			outShmNameData := (*[unsafe.Sizeof(*outShmName)]byte)(unsafe.Pointer(outShmName))[:]
+			if _, err := c.outwp.Write(outShmNameData); err != nil {
+				output = <-c.readDone
+				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+				return
+			}
+		}
+	}
+
 	req := &executeReq{
 		magic:     inMagic,
 		envFlags:  uint64(c.config.Flags),
@@ -747,7 +786,7 @@ func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, 
 	}
 	if progData != nil {
 		num, err := c.outwp.Write(progData)
-		log.Logf(0,"num ::::: %v",num)
+		log.Logf(0, "num ::::: %v", num)
 		if err != nil {
 			output = <-c.readDone
 			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
@@ -769,8 +808,8 @@ func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, 
 		}
 	}()
 	restart = c.config.Flags&FlagUseForkServer == 0
-	/*Additional constant added*///---------------------
-//	restart = false
+	/*Additional constant added*/ //---------------------
+	//	restart = false
 	//--------------------------------------------------
 	exitStatus := -1
 	completedCalls := (*uint32)(unsafe.Pointer(&c.outmem[0]))
