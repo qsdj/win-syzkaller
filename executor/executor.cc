@@ -98,8 +98,8 @@ static void alloc_shm();
 const int MaxNameLength = 255;
 static char inShmName[MaxNameLength+1];
 static char outShmName[MaxNameLength+1];
-HANDLE inShm;
-HANDLE outShm;
+static void* inShm;
+static void* outShm;
 static void receive_shm_name();
 #endif
 #endif
@@ -255,7 +255,7 @@ struct shm_req {
 	uint64_t magic;
 	uint64_t in_shm_length;
 	uint64_t out_shm_length;
-}
+};
 
 // call_reply.flags
 const uint32_t call_flag_executed = 1 << 0;
@@ -445,12 +445,12 @@ void alloc_shm()
 #if GOOS_windows
 	receive_shm_name();
 	inShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxInput, inShmName);
-	input_data = MapViewOfFile(inShm, FILE_MAP_WRITE, 0, 0, 0);
+	input_data = (char*)MapViewOfFile(inShm, FILE_MAP_WRITE, 0, 0, 0);
 	if (!input_data)
 		fail("VirtualAlloc of input file failed");
 
 	outShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxOutput, outShmName);
-	output_data = MapViewOfFile(outShm, FILE_MAP_WRITE, 0, 0, 0);
+	output_data = (uint32_t*)MapViewOfFile(outShm, FILE_MAP_WRITE, 0, 0, 0);
 	if (!output_data)
 		fail("VirtualAlloc of output file failed");
 
@@ -1311,7 +1311,11 @@ uint32_t* write_output(uint32_t v)
 
 void write_completed(uint32_t completed)
 {
+#if GOOS_windows
+	output_data[0] = completed;
+#else
 	__atomic_store_n(output_data, completed, __ATOMIC_RELEASE);
+#endif
 }
 #endif
 

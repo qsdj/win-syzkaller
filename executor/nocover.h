@@ -18,12 +18,12 @@ static void cover_collect(cover_t* cov)
 }
 
 #if SYZ_EXECUTOR_USES_SHMEM
-static bool cover_check(uint32 pc)
+static bool cover_check(uint32_t pc)
 {
 	return true;
 }
 
-static bool cover_check(uint64 pc)
+static bool cover_check(uint64_t pc)
 {
 	return true;
 }

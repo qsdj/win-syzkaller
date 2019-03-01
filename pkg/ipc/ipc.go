@@ -285,7 +285,8 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 		}
 	}
 	var restart bool
-	output, failed, hanged, restart, err0 = env.cmd.exec(opts, progData)
+	getShmName := (p.Target.OS == "windows") && (env.config.Flags&FlagUseShmem != 0)
+	output, failed, hanged, restart, err0 = env.cmd.exec(opts, progData, getShmName)
 	if err0 != nil {
 		env.cmd.close()
 		env.cmd = nil
@@ -739,33 +740,33 @@ func (c *command) wait() error {
 	return err
 }
 
-func (c *command) exec(opts *ExecOpts, progData []byte) (output []byte, failed, hanged,
+func (c *command) exec(opts *ExecOpts, progData []byte, getShmName bool) (output []byte, failed, hanged,
 	restart bool, err0 error) {
-	if c.config.Flags&FlagUseShmem != 0 {
-		if p.Target.OS == "windows" {
-			shmReq := &shmReq{
-				magic:        inMagic,
-				inShmLength:  uint64(len(inShmName)),
-				outShmLength: uint64(len(outShmName)),
-			}
-			shmReqData := (*[unsafe.Sizeof(*shmReq)]byte)(unsafe.Pointer(shmReq))[:]
-			if _, err := c.outwp.Write(shmReqData); err != nil {
-				output = <-c.readDone
-				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
-				return
-			}
-			inShmNameData := (*[unsafe.Sizeof(*inShmName)]byte)(unsafe.Pointer(inShmName))[:]
-			if _, err := c.outwp.Write(inShmNameData); err != nil {
-				output = <-c.readDone
-				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
-				return
-			}
-			outShmNameData := (*[unsafe.Sizeof(*outShmName)]byte)(unsafe.Pointer(outShmName))[:]
-			if _, err := c.outwp.Write(outShmNameData); err != nil {
-				output = <-c.readDone
-				err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
-				return
-			}
+	if getShmName {
+		shmReq := &shmReq{
+			magic:        inMagic,
+			inShmLength:  uint64(len(inShmName)),
+			outShmLength: uint64(len(outShmName)),
+		}
+		shmReqData := (*[unsafe.Sizeof(*shmReq)]byte)(unsafe.Pointer(shmReq))[:]
+		if _, err := c.outwp.Write(shmReqData); err != nil {
+			output = <-c.readDone
+			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+			return
+		}
+		//inShmNameData := (*[unsafe.Sizeof(*inShmName)]byte)(unsafe.Pointer(inShmName))[:]
+		inShmNameData := []byte(inShmName)
+		if _, err := c.outwp.Write(inShmNameData); err != nil {
+			output = <-c.readDone
+			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+			return
+		}
+		//outShmNameData := (*[unsafe.Sizeof(*outShmName)]byte)(unsafe.Pointer(outShmName))[:]
+		outShmNameData := []byte(outShmName)
+		if _, err := c.outwp.Write(outShmNameData); err != nil {
+			output = <-c.readDone
+			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
+			return
 		}
 	}
 
