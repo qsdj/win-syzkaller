@@ -182,6 +182,8 @@ func MakeEnv(config *Config, pid int) (*Env, error) {
 				osutil.CloseMemMappedFile(outf, outmem)
 			}
 		}()
+		inShmName = inf.Name()
+		outShmName = outf.Name()
 	} else {
 		inmem = make([]byte, prog.ExecBufferSize)
 		outmem = make([]byte, outputSize)
@@ -279,7 +281,14 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 			<-rateLimit.C
 		}
 		atomic.AddUint64(&env.StatRestarts, 1)
-		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out)
+		doExtra := true
+		if env.inFile == nil || env.outFile == nil {
+			doExtra = false
+		}
+		if p.Target.OS == "windows" {
+			doExtra = false
+		}
+		env.cmd, err0 = makeCommand(env.pid, env.bin, env.config, env.inFile, env.outFile, env.out, doExtra)
 		if err0 != nil {
 			return
 		}
@@ -538,7 +547,7 @@ type callReply struct {
 	// signal/cover/comps follow
 }
 
-const (
+var (
 	inShmName  string = ""
 	outShmName string = ""
 )
@@ -549,7 +558,7 @@ type shmReq struct {
 	outShmLength uint64
 }
 
-func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte) (
+func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File, outmem []byte, doExtra bool) (
 	*command, error) {
 	dir, err := ioutil.TempDir("./", "syzkaller-testdir")
 	if err != nil {
@@ -603,7 +612,7 @@ func makeCommand(pid int, bin []string, config *Config, inFile, outFile *os.File
 	c.exited = make(chan struct{})
 
 	cmd := osutil.Command(bin[0], bin[1:]...)
-	if inFile != nil && outFile != nil {
+	if inFile != nil && outFile != nil && doExtra {
 		cmd.ExtraFiles = []*os.File{inFile, outFile}
 	}
 	cmd.Env = []string{}
@@ -749,6 +758,7 @@ func (c *command) exec(opts *ExecOpts, progData []byte, getShmName bool) (output
 			outShmLength: uint64(len(outShmName)),
 		}
 		shmReqData := (*[unsafe.Sizeof(*shmReq)]byte)(unsafe.Pointer(shmReq))[:]
+		fmt.Printf("%v (%d)\n", shmReqData, len(shmReqData))
 		if _, err := c.outwp.Write(shmReqData); err != nil {
 			output = <-c.readDone
 			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)
