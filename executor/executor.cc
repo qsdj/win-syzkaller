@@ -14,6 +14,7 @@
 #include <string.h>
 #include <time.h>
 #include <atomic>
+#include <process.h>
 
 #include <io.h>
 #include "defs.h"
@@ -339,6 +340,7 @@ int main(int argc, char** argv)
 
 	os_init(argc, argv, (void*)SYZ_DATA_OFFSET, SYZ_NUM_PAGES * SYZ_PAGE_SIZE);
 
+	setup_control_pipes();
 #if SYZ_EXECUTOR_USES_SHMEM
         alloc_shm();
 #else
@@ -351,7 +353,6 @@ int main(int argc, char** argv)
 
 	use_temporary_dir();
 	install_segv_handler();
-	setup_control_pipes();
 #if SYZ_EXECUTOR_USES_FORK_SERVER
 	receive_handshake();
 #else
@@ -423,6 +424,7 @@ int main(int argc, char** argv)
 #if GOOS_windows
 void receive_shm_name()
 {
+	char in_tmp[256], out_tmp[256]; // need to be initialized with \x00
 	shm_req req;
 	if (read(kInPipeFd, &req, sizeof(req)) != (signed int)sizeof(req))
 		fail("control pipe read failed");
@@ -433,10 +435,13 @@ void receive_shm_name()
 	if (req.out_shm_length > MaxNameLength)
 		fail("bad out_shm_name size 0x%llx", req.out_shm_length);
 
-	if (read(kInPipeFd, inShmName, req.in_shm_length) != (signed int)(req.in_shm_length))
+	if (read(kInPipeFd, in_tmp, req.in_shm_length) != (signed int)(req.in_shm_length))
 		fail("control pipe read failed");
-	if (read(kInPipeFd, outShmName, req.out_shm_length) != (signed int)(req.out_shm_length))
+	if (read(kInPipeFd, out_tmp, req.out_shm_length) != (signed int)(req.out_shm_length))
 		fail("control pipe read failed");
+
+	sprintf(inShmName, "..\\%s", in_tmp);
+	sprintf(outShmName, "..\\%s", out_tmp);
 }
 #endif
 
@@ -444,16 +449,27 @@ void alloc_shm()
 {
 #if GOOS_windows
 	receive_shm_name();
-	inShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxInput, inShmName);
-	input_data = (char*)MapViewOfFile(inShm, FILE_MAP_WRITE, 0, 0, 0);
+        void *handle;
+
+	handle = CreateFile(inShmName, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+	inShm = CreateFileMapping(handle, NULL, PAGE_READWRITE, 0, kMaxInput, NULL);
+	CloseHandle(handle);
+	input_data = (char*)MapViewOfFileEx(inShm, FILE_MAP_WRITE, 0, 0, 0, NULL);
 	if (!input_data)
 		fail("VirtualAlloc of input file failed");
 
-	outShm = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, kMaxOutput, outShmName);
-	output_data = (uint32_t*)MapViewOfFile(outShm, FILE_MAP_WRITE, 0, 0, 0);
+	void* preferred = (void*)(0x1b2bc20000ull + (1 << 20) * (_getpid() % 128));
+	handle = CreateFile(outShmName, GENERIC_READ|GENERIC_WRITE, FILE_SHARE_READ|FILE_SHARE_WRITE, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+	outShm = CreateFileMapping(handle, NULL, PAGE_READWRITE, 0, kMaxOutput, NULL);
+	CloseHandle(handle);
+	output_data = (uint32_t*)MapViewOfFileEx(outShm, FILE_MAP_WRITE, 0, 0, 0, preferred);
 	if (!output_data)
 		fail("VirtualAlloc of output file failed");
+	if (output_data != preferred)
+		debug("not preferred address");
 
+	CloseHandle(inShm);
+	CloseHandle(outShm);
 #else
 	if (mmap(&input_data[0], kMaxInput, PROT_READ, MAP_PRIVATE | MAP_FIXED, kInFd, 0) != &input_data[0])
 		fail("mmap of input file failed");
