@@ -10,5 +10,6 @@
 #define SYZ_PAGE_SIZE 4096
 #define SYZ_NUM_PAGES 4096
 #define SYZ_DATA_OFFSET 536870912
+#define SYZ_DECAF 1
 
 #endif

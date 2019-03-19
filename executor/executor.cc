@@ -105,6 +105,36 @@ static void receive_shm_name();
 #endif
 #endif
 
+#if SYZ_DECAF
+static void* decaf_data;
+
+static void write_decaf(uint32_t id, uint32_t size, void* buf);
+static void send_init();
+
+#define DECAF_ADDR 0xcafe0000
+#define DECAF_MAX_SIZE 0x3000
+
+enum decaf_type {
+	decaf_send_info,
+	decaf_start_syscall,
+	decaf_end_syscall,
+	decaf_end_executor
+};
+
+struct decaf_req {
+	uint32_t flag;
+	uint32_t id;
+	uint32_t size
+
+};
+
+struct decaf_stack_info {
+	uint64_t stack_start;
+	uint64_t stack_end;
+}
+	
+#endif
+
 enum sandbox_type {
 	sandbox_none,
 	sandbox_setuid,
@@ -341,6 +371,11 @@ int main(int argc, char** argv)
 	os_init(argc, argv, (void*)SYZ_DATA_OFFSET, SYZ_NUM_PAGES * SYZ_PAGE_SIZE);
 
 	setup_control_pipes();
+#if SYZ_DECAF
+	decaf_data = VirtualAlloc(DECAF_ADDR, DECAF_MAX_SIZE, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+	if (decaf_data != DECAF_ADDR)
+		fail("VirtualAlloc failed with decaf_data");
+#endif
 #if SYZ_EXECUTOR_USES_SHMEM
         alloc_shm();
 #else
@@ -369,6 +404,8 @@ int main(int argc, char** argv)
 			cover_enable(&extra_cov, false, true);
 		}
 	}
+	
+	send_init();
 
 	int status = 0;
 	switch (flag_sandbox) {
@@ -393,6 +430,11 @@ int main(int argc, char** argv)
 	default:
 		fail("unknown sandbox type");
 	}
+
+#if SYZ_DECAF
+	write_decaf(decaf_end_executor, 0, NULL);
+#endif
+
 #if SYZ_EXECUTOR_USES_FORK_SERVER
 	// Other statuses happen when fuzzer processes manages to kill loop.
 	if (status != kFailStatus && status != kErrorStatus)
@@ -419,6 +461,33 @@ int main(int argc, char** argv)
 	return status;
 #endif
 }
+
+#if SYZ_DECAF
+void write_decaf(uint32_t id, uint32_t size, void *buf)
+{
+	decaf_req *out = (decaf_req*)decaf_data;
+	out->id = id;
+	if (size > DECAF_MAX_SIZE - sizeof(decaf_req))
+		fail("bad decaf_req size 0x%x", size);
+	out->size = size;
+	if (size == 0)
+	{
+		out->flag = 1;
+		return;
+	}
+	if (buf == NULL)
+		fail("size 0x%x but invalid buf");
+	memcpy(decaf_data + sizeof(decaf_req), buf, size);
+	out->flag = 1;
+}
+
+void send_init()
+{
+	uint64_t kstack[2];
+	
+	write_decaf(decaf_send_info, sizeof(kstack), kstack);
+}
+#endif
 
 #if SYZ_EXECUTOR_USES_SHMEM
 #if GOOS_windows
@@ -1089,7 +1158,15 @@ void execute_call(thread_t* th)
 	if (flag_cover)
 		cover_reset(&th->cov);
 	errno = 0;
+#if SYZ_DECAF
+	uint32_t* buf = malloc(sizeof(uint32_t));
+	buf[0] = th->call_num;
+	write_decaf(decaf_start_syscall, sizeof(buf), buf);
+#endif
 	th->res = execute_syscall(call, th->args);
+#if SYZ_DECAF
+	write_decaf(decaf_end_syscall, 0, NULL);
+#endif
 	th->reserrno = errno;
 	if (th->res == -1 && th->reserrno == 0)
 		th->reserrno = EINVAL; // our syz syscalls may misbehave
