@@ -10,7 +10,6 @@ package prog
 
 import (
 	"fmt"
-	"github.com/google/syzkaller/pkg/log"
 )
 
 type state struct {
@@ -207,7 +206,6 @@ func (p *Prog) FallbackSignal(info []CallInfo) {
 			typ = fallbackSignalErrnoBlocked
 		}
 		inf.Signal = append(inf.Signal, encodeFallbackSignal(typ, id, inf.Errno))
-		log.Logf(0,"")
 		if inf.Errno != 0 {
 			continue
 		}

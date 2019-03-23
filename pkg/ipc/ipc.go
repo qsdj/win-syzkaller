@@ -16,7 +16,6 @@ import (
 	"unsafe"
 
 	"github.com/google/syzkaller/pkg/cover"
-	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/pkg/signal"
 	"github.com/google/syzkaller/prog"
@@ -273,7 +272,6 @@ func (env *Env) Exec(opts *ExecOpts, p *prog.Prog) (output []byte, info *ProgInf
 	}
 
 	atomic.AddUint64(&env.StatExecs, 1)
-	log.Logf(0, "")
 	if env.cmd == nil {
 		if p.Target.OS == "akaros" {
 			// On akaros executor is actually ssh,
@@ -348,9 +346,6 @@ func (env *Env) parseOutput(p *prog.Prog) (*ProgInfo, error) {
 			return nil, fmt.Errorf("failed to read call %v reply", i)
 		}
 		reply := *(*callReply)(unsafe.Pointer(&out[0]))
-		//reply.num = (reply.buf << 10)| (reply.numH << 8) | (reply.numL)
-		//log.Logf(0,"reply.buf : %v",reply.buf)
-		//log.Logf(0,"reply.index : %v reply.num %v reply.numH %v reply.numL %v reply.errno %v reply.flags %v",reply.index, reply.num, reply.numH, reply.numL, reply.errno, reply.flags)
 		out = out[unsafe.Sizeof(callReply{}):]
 		var inf *CallInfo
 		if reply.index != extraReplyIndex {
@@ -796,8 +791,7 @@ func (c *command) exec(opts *ExecOpts, progData []byte, getShmName bool) (output
 		return
 	}
 	if progData != nil {
-		num, err := c.outwp.Write(progData)
-		log.Logf(0, "num ::::: %v", num)
+		_, err := c.outwp.Write(progData)
 		if err != nil {
 			output = <-c.readDone
 			err0 = fmt.Errorf("executor %v: failed to write control pipe: %v", c.pid, err)

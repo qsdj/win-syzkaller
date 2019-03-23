@@ -24,6 +24,7 @@ import (
 
 const (
 	programLength = 30
+	ACCESS_VIOLATION = 3221226356
 )
 
 // Proc represents a single fuzzing process (executor).
@@ -61,6 +62,11 @@ func newProc(fuzzer *Fuzzer, pid int) (*Proc, error) {
 		execOptsNoCollide: &execOptsNoCollide,
 	}
 	return proc, nil
+}
+func (proc *Proc) regenerateInput()(*prog.Prog) {
+	ct := proc.fuzzer.choiceTable
+	p := proc.fuzzer.target.Generate(proc.rnd, programLength, ct)
+	return p
 }
 
 func (proc *Proc) loop() {
@@ -285,8 +291,6 @@ func (proc *Proc) executeRaw(opts *ipc.ExecOpts, p *prog.Prog, stat Stat) *ipc.P
 	// Limit concurrency window and do leak checking once in a while.
 	ticket := proc.fuzzer.gate.Enter()
 	defer proc.fuzzer.gate.Leave(ticket)
-
-	log.Logf(0,"::::::::::::executeRAW: %s",p)
 	proc.logProgram(opts, p)
 	for try := 0; ; try++ {
 		atomic.AddUint64(&proc.fuzzer.stats[stat], 1)
@@ -300,10 +304,13 @@ func (proc *Proc) executeRaw(opts *ipc.ExecOpts, p *prog.Prog, stat Stat) *ipc.P
 			if try > 10 {
 				log.Fatalf("executor %v failed %v times:\n%v", proc.pid, try, err)
 			}
+
 			log.Logf(4, "fuzzer detected executor failure='%v', retrying #%d", err, try+1)
 			debug.FreeOSMemory()
 			time.Sleep(time.Second)
-			continue
+			//TODO: need to find another way to check WINAPI
+			//continue
+			info = &ipc.ProgInfo
 		}
 		log.Logf(2, "result failed=%v hanged=%v: %s\n", failed, hanged, output)
 		return info
@@ -325,7 +332,6 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
 	// It must not be intermixed.
 	switch proc.fuzzer.outputType {
 	case OutputStdout:
-		log.Logf(0,"type : OutputStdout")
 		now := time.Now()
 		proc.fuzzer.logMu.Lock()
 		fmt.Printf("%02v:%02v:%02v executing program %v%v:\n%s\n",
@@ -333,7 +339,6 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
 			proc.pid, strOpts, data)
 		proc.fuzzer.logMu.Unlock()
 	case OutputDmesg:
-		log.Logf(0,"type : OutputDmesg");
 		fd, err := syscall.Open("/dev/kmsg", syscall.O_WRONLY, 0)
 		if err == nil {
 			buf := new(bytes.Buffer)
@@ -343,7 +348,6 @@ func (proc *Proc) logProgram(opts *ipc.ExecOpts, p *prog.Prog) {
 			syscall.Close(fd)
 		}
 	case OutputFile:
-		log.Logf(0,"type : OutputFile")
 		f, err := os.Create(fmt.Sprintf("%v-%v.prog", proc.fuzzer.name, proc.pid))
 		if err == nil {
 			if strOpts != "" {

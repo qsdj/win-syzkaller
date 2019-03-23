@@ -29,6 +29,15 @@ var structDescs_amd64 = []*KeyedStruct{
 }
 
 var syscalls_amd64 = []*Syscall{
+//	{Name: "AbortDoc", CallName: "AbortDoc", Args: []Type{
+//		&PtrType{TypeCommon: TypeCommon{TypeName: "ptr", FldName: "hdc", TypeSize: 8}, Type: &IntType{IntTypeCommon: IntTypeCommon{TypeCommon: TypeCommon{TypeName: "intptr", TypeSize: 8, ArgDir: 2}}}},
+//	}},
+//	{Name: "AbortPath", CallName: "AbortPath", Args: []Type{
+//		&PtrType{TypeCommon: TypeCommon{TypeName: "ptr", FldName: "hdc", TypeSize: 8}, Type: &IntType{IntTypeCommon: IntTypeCommon{TypeCommon: TypeCommon{TypeName: "intptr", TypeSize: 8, ArgDir: 2}}}},
+//	}},
+	{Name: "AbortPrinter", CallName: "AbortPrinter", Args: []Type{
+		&ResourceType{TypeCommon: TypeCommon{TypeName: "HANDLE", FldName: "hPrinter", TypeSize: 8}},
+	}},
 	{Name: "CloseHandle", CallName: "CloseHandle", Args: []Type{
 		&ResourceType{TypeCommon: TypeCommon{TypeName: "HANDLE", FldName: "hObject", TypeSize: 8}},
 	}},
@@ -129,4 +138,4 @@ var consts_amd64 = []ConstValue{
 	{Name: "WRITE_OWNER", Value: 524288},
 }
 
-const revision_amd64 = "aa432daf55aba3936abb40d197956ccdba8b2085+"
+const revision_amd64 = "7f58e6832b5d8674b8a77505e6eb0fa213781c23"

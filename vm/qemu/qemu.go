@@ -4,6 +4,7 @@
 package qemu
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -12,11 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"time"
-
 	"github.com/google/syzkaller/pkg/config"
 	"github.com/google/syzkaller/pkg/log"
 	"github.com/google/syzkaller/pkg/osutil"
 	"github.com/google/syzkaller/vm/vmimpl"
+
+	"github.com/google/syzkaller/pkg/kd"
 )
 
 const (
@@ -55,6 +57,7 @@ type instance struct {
 	sshkey     string
 	sshuser    string
 	port       int
+	serialport int
 	rpipe      io.ReadCloser
 	wpipe      io.WriteCloser
 	qemu       *exec.Cmd
@@ -312,11 +315,13 @@ func (inst *instance) Close() {
 
 func (inst *instance) Boot() error {
 	inst.port = vmimpl.UnusedTCPPort()
+	inst.serialport = vmimpl.UnusedTCPPort()
 	args := []string{
 		"-m", strconv.Itoa(inst.cfg.Mem),
 		"-smp", strconv.Itoa(inst.cfg.CPU),
 		"-net", "nic" + inst.archConfig.NicModel,
 		"-net", fmt.Sprintf("user,host=%v,hostfwd=tcp::%v-:22", hostAddr, inst.port),
+		"-serial", fmt.Sprintf("tcp::%v,server,nowait",inst.serialport),
 		"-display", "none",
 		"-serial", "stdio",
 		"-no-reboot",
@@ -446,12 +451,44 @@ func (inst *instance) Copy(hostSrc string) (string, error) {
 
 func (inst *instance) Run(timeout time.Duration, stop <-chan bool, command string) (
 	<-chan []byte, <-chan error, error) {
+
+	conRpipe, conWpipe, err := osutil.LongPipe()
+	conArgs := vmimpl.SSHArgs(inst.debug, inst.sshkey, inst.serialport)
+	con     := osutil.Command("ssh", conArgs...)
+	con.Env = []string{}
+	con.Stdout = conWpipe
+	con.Stderr = conWpipe
+	_, err = con.StdinPipe()
+	if err != nil {
+		conRpipe.Close()
+		conWpipe.Close()
+		return nil, nil, err
+	}
+
+	if err := con.Start(); err != nil {
+		conRpipe.Close()
+		conWpipe.Close()
+		return nil, nil, fmt.Errorf("failed to connect to console server : %v", err)
+	}
+	conWpipe.Close()
+
+
 	rpipe, wpipe, err := osutil.LongPipe()
+
 	if err != nil {
 		return nil, nil, err
 	}
-	inst.merger.Add("ssh", rpipe)
-
+	var decoder func(data []byte) (int, int, []byte)
+	if inst.os == "windows!!!" {
+		decoder = kd.Decode
+		inst.merger.AddDecoder("console", rpipe, decoder)
+		if err := waitForConsoleConnect(inst.merger); err != nil {
+			inst.merger.Wait()
+			return nil, nil, fmt.Errorf("failed to connect console %v",err)
+		}
+	} else {
+		inst.merger.Add("ssh", rpipe)
+	}
 	sshArgs := vmimpl.SSHArgs(inst.debug, inst.sshkey, inst.port)
 	args := strings.Split(command, " ")
 	if bin := filepath.Base(args[0]); inst.archConfig.HostFuzzer &&
@@ -528,6 +565,44 @@ func (inst *instance) Diagnose() ([]byte, bool) {
 	}
 	return nil, false
 }
+
+
+func waitForConsoleConnect(merger *vmimpl.OutputMerger) error {
+	// We've started the console reading ssh command, but it has not necessary connected yet.
+	// If we proceed to running the target command right away, we can miss part
+	// of console output. During repro we can crash machines very quickly and
+	// would miss beginning of a crash. Before ssh starts piping console output,
+	// it usually prints:
+	// "serialport: Connected to ... port 1 (session ID: ..., active connections: 1)"
+	// So we wait for this line, or at least a minute and at least some output.
+	timeout := time.NewTimer(time.Minute)
+	defer timeout.Stop()
+	connectedMsg := []byte("serialport: Connected")
+	permissionDeniedMsg := []byte("Permission denied (publickey)")
+	var output []byte
+	for {
+		select {
+		case out := <-merger.Output:
+			output = append(output, out...)
+			if bytes.Contains(output, connectedMsg) {
+				// Just to make sure (otherwise we still see trimmed reports).
+				time.Sleep(5 * time.Second)
+				return nil
+			}
+			if bytes.Contains(output, permissionDeniedMsg) {
+				// This is a GCE bug.
+				return fmt.Errorf("broken console: %s", permissionDeniedMsg)
+			}
+		case <-timeout.C:
+			if len(output) == 0 {
+				return fmt.Errorf("broken console: no output")
+			}
+			return nil
+		}
+	}
+}
+
+
 
 // nolint: lll
 const initScript = `#! /bin/bash
